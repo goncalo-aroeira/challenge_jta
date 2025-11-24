@@ -103,3 +103,193 @@ def search_products(
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).mappings().all()
         return [dict(r) for r in rows]
+
+
+# ---------- Função 2: get_product_details ----------
+
+def get_product_details(product_id: Optional[int] = None, product_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Obtém detalhes completos de um produto específico.
+    
+    Args:
+        product_id: ID do produto (prioritário)
+        product_name: Nome do produto (usado se product_id não fornecido)
+    
+    Returns:
+        Dict com info do produto ou None se não encontrado
+    """
+    if product_id is None and product_name is None:
+        return None
+    
+    with engine.connect() as conn:
+        if product_id:
+            sql = """
+                SELECT 
+                    product_id,
+                    name,
+                    segment,
+                    category,
+                    type,
+                    franchise,
+                    min_age,
+                    popularity_global,
+                    times_sold,
+                    store_a,
+                    store_b,
+                    store_c,
+                    text_blob
+                FROM products
+                WHERE product_id = :product_id
+            """
+            result = conn.execute(text(sql), {"product_id": product_id}).mappings().first()
+        else:
+            # Busca por nome (case-insensitive, exact match)
+            sql = """
+                SELECT 
+                    product_id,
+                    name,
+                    segment,
+                    category,
+                    type,
+                    franchise,
+                    min_age,
+                    popularity_global,
+                    times_sold,
+                    store_a,
+                    store_b,
+                    store_c,
+                    text_blob
+                FROM products
+                WHERE LOWER(name) = LOWER(:name)
+                LIMIT 1
+            """
+            result = conn.execute(text(sql), {"name": product_name}).mappings().first()
+        
+        return dict(result) if result else None
+
+
+# ---------- Função 3: get_cooccurrence_neighbors ----------
+
+def get_cooccurrence_neighbors(product_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Encontra produtos frequentemente comprados junto com o produto dado.
+    
+    Args:
+        product_id: ID do produto de referência
+        limit: Número máximo de produtos a retornar
+    
+    Returns:
+        Lista de produtos ordenados por frequência de co-ocorrência
+    """
+    sql = """
+        SELECT 
+            p.product_id,
+            p.name,
+            p.segment,
+            p.franchise,
+            p.min_age,
+            p.popularity_global,
+            c.cooccurrence_count
+        FROM product_cooccurrence c
+        JOIN products p ON p.product_id = c.product_id_2
+        WHERE c.product_id_1 = :product_id
+        ORDER BY c.cooccurrence_count DESC
+        LIMIT :limit
+    """
+    
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(sql), 
+            {"product_id": product_id, "limit": limit}
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
+# ---------- Função 4: find_similar_products (Placeholder) ----------
+
+def find_similar_products(product_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Encontra produtos similares baseado em características.
+    
+    NOTA: Esta é uma versão placeholder que usa co-occurrence como proxy.
+    Na Fase 2, será substituída por vector similarity (embeddings).
+    
+    Args:
+        product_id: ID do produto de referência
+        limit: Número máximo de produtos similares
+    
+    Returns:
+        Lista de produtos similares
+    """
+    # Por agora, usa co-occurrence como proxy de similaridade
+    return get_cooccurrence_neighbors(product_id, limit)
+
+
+# ---------- Função 5: get_product_by_name_fuzzy ----------
+
+def get_product_by_name_fuzzy(name: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Busca produtos por nome (fuzzy matching).
+    Útil quando o user menciona um jogo mas não sabe o nome exato.
+    
+    Args:
+        name: Nome parcial do produto
+        limit: Número máximo de resultados
+    
+    Returns:
+        Lista de produtos que correspondem ao pattern
+    """
+    sql = """
+        SELECT 
+            product_id,
+            name,
+            segment,
+            franchise,
+            min_age,
+            popularity_global
+        FROM products
+        WHERE name ILIKE :pattern
+        ORDER BY popularity_global DESC
+        LIMIT :limit
+    """
+    
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(sql), 
+            {"pattern": f"%{name}%", "limit": limit}
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
+# ---------- Teste das Funções ----------
+
+if __name__ == "__main__":
+    print("=== Testing recsys/tools.py ===\n")
+    
+    # Test 1: search_products
+    print("1. Search products for kids at Store A:")
+    results = search_products(store="Store A", max_age=7, limit=3)
+    for r in results:
+        print(f"  - {r['name']} (Age: {r['min_age']}+)")
+    
+    # Test 2: get_product_details
+    print("\n2. Get details of product ID 1:")
+    details = get_product_details(product_id=1)
+    if details:
+        print(f"  - {details['name']}")
+        print(f"  - Franchise: {details['franchise']}")
+        print(f"  - Stores: A={details['store_a']}, B={details['store_b']}, C={details['store_c']}")
+    
+    # Test 3: get_cooccurrence_neighbors
+    print("\n3. Products bought with product ID 1:")
+    neighbors = get_cooccurrence_neighbors(product_id=1, limit=3)
+    for n in neighbors:
+        print(f"  - {n['name']} (co-occurrence: {n['cooccurrence_count']})")
+    
+    # Test 4: fuzzy search
+    print("\n4. Fuzzy search for 'Mario':")
+    fuzzy = get_product_by_name_fuzzy("Mario", limit=3)
+    for f in fuzzy:
+        print(f"  - {f['name']}")
+    
+    print("\n=== All tests passed! ===")
