@@ -1,112 +1,163 @@
-# part1_geo/src/geo_loader.py
-
-from __future__ import annotations
+"""
+Loader module to parse portugal.json and build lookup structures.
+"""
 
 import json
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Tuple, Optional
+from .utils import normalize_name
 
 
-@dataclass
 class Location:
-    id: int
-    name: str
-    admin_level: int
-    parent_id: Optional[int]
-    ancestors_ids: List[int]
-    ancestors_names: List[str]
-    ancestors_levels: List[int]
+    """Represents a geographic location with its hierarchy."""
+    
+    def __init__(self, id: int, name: str, admin_level: int, parent_id: Optional[int] = None):
+        self.id = id
+        self.name = name  # Normalized name
+        self.original_name = name  # Keep original for reference
+        self.admin_level = admin_level
+        self.parent_id = parent_id
+        self.ancestors = []  # List of ancestor IDs (including self)
+        self.ancestors_names = []  # List of ancestor names
+        self.ancestors_levels = []  # List of ancestor levels
+    
+    def __repr__(self):
+        return f"Location(id={self.id}, name='{self.name}', level={self.admin_level})"
 
 
-@dataclass
-class GeoIndex:
-    locations: Dict[int, Location]              # id -> Location
-    by_city: Dict[str, List[int]]               # "valadares" -> [loc_ids...]
-    by_city_state: Dict[tuple[str, str], List[int]]  # ("valadares","viseu") -> [loc_ids...]
-
-
-def _normalize_name(name: str) -> str:
-    """
-    Normaliza nomes para lookup:
-    - lower case
-    - strip espaços
-    (se quiseres depois podes remover acentos aqui)
-    """
-    if name is None:
-        return ""
-    return " ".join(name.strip().lower().split())
-
-
-def build_geo_index(json_path: str) -> GeoIndex:
-    """
-    Lê o portugal.json e devolve uma estrutura GeoIndex com:
-    - lista de Location (achatadas)
-    - índices by_city e by_city_state
-    """
-    with open(json_path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-
-    locations: Dict[int, Location] = {}
-    by_city: Dict[str, List[int]] = {}
-    by_city_state: Dict[tuple[str, str], List[int]] = {}
-
-    counter = {"value": 0}  # usar dict para mutabilidade dentro da função interna
-
-    def traverse(node: Dict[str, Any],
-                 name: str,
-                 parent_id: Optional[int],
-                 ancestors: List[Location]) -> Location:
+class GeoDataLoader:
+    """Loads and indexes geographic data from JSON."""
+    
+    def __init__(self, json_path: str):
         """
-        Percorre recursivamente a árvore e cria Location para cada nó.
+        Initialize loader and parse JSON file.
+        
+        Args:
+            json_path: Path to portugal.json file
         """
-        counter["value"] += 1
-        loc_id = counter["value"]
+        self.json_path = json_path
+        self.locations: List[Location] = []
+        self.locations_by_id: Dict[int, Location] = {}
+        self.by_city: Dict[str, List[int]] = {}  # normalized_name -> [location_ids]
+        self.by_city_state: Dict[Tuple[str, str], List[int]] = {}  # (city, state) -> [location_ids]
+        
+        self._load_and_index()
+    
+    def _load_and_index(self):
+        """Load JSON and build all indexes."""
+        with open(self.json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
+        
+        # Parse the tree structure - start with "portugal" as the root
+        self._parse_tree(data, parent_id=None, parent_name=None, node_name="portugal")
+        
+        # Build ancestor chains
+        self._build_ancestors()
+        
+        # Build indexes
+        self._build_indexes()
+    
+    def _parse_tree(self, node: dict, parent_id: Optional[int], parent_name: Optional[str], node_name: Optional[str] = None):
+        """
+        Recursively parse the JSON tree structure.
+        
+        Args:
+            node: Current node in the tree
+            parent_id: ID of the parent location
+            parent_name: Name of the parent location (for state context)
+            node_name: Name of this node (used when name is a dict key)
+        """
+        # Determine the name - either from parameter, "name" field, or default
+        name = node_name or node.get("name", "")
         admin_level = node.get("admin_level")
-        location = Location(
-            id=loc_id,
-            name=name,
-            admin_level=admin_level,
-            parent_id=parent_id,
-            ancestors_ids=[a.id for a in ancestors],
-            ancestors_names=[a.name for a in ancestors],
-            ancestors_levels=[a.admin_level for a in ancestors],
-        )
-        locations[loc_id] = location
-
-        # Index por cidade (nome do próprio nó)
-        city_norm = _normalize_name(name)
-        if city_norm:
-            by_city.setdefault(city_norm, []).append(loc_id)
-
-            # Index por (cidade, "estado")
-            # Aqui uma opção simples: para cada ancestor, indexar (cidade, ancestor_name)
-            for anc in ancestors:
-                state_norm = _normalize_name(anc.name)
-                if state_norm:
-                    key = (city_norm, state_norm)
-                    by_city_state.setdefault(key, []).append(loc_id)
-
-        # Percorrer filhos
-        for child_name, child_node in node.get("children", {}).items():
-            traverse(
-                node=child_node,
-                name=child_name,
-                parent_id=loc_id,
-                ancestors=ancestors + [location],
-            )
-
-        return location
-
-    # A raiz do ficheiro é "Portugal" com admin_level 2 e os children são distritos/regiões
-    root_node = {
-        "admin_level": raw["admin_level"],
-        "children": raw["children"],
-    }
-    traverse(root_node, "portugal", parent_id=None, ancestors=[])
-
-    return GeoIndex(
-        locations=locations,
-        by_city=by_city,
-        by_city_state=by_city_state,
-    )
+        
+        # Skip if no admin_level (invalid node)
+        if admin_level is None:
+            return
+        
+        # Create location
+        loc_id = len(self.locations)
+        normalized_name = normalize_name(name)
+        loc = Location(id=loc_id, name=normalized_name, admin_level=admin_level, parent_id=parent_id)
+        loc.original_name = name
+        
+        self.locations.append(loc)
+        self.locations_by_id[loc_id] = loc
+        
+        # Process children
+        if "children" in node and node["children"]:
+            for child_name, child_node in node["children"].items():
+                # Recursively process child with its name
+                self._parse_tree(child_node, parent_id=loc_id, parent_name=normalized_name, node_name=child_name)
+    
+    def _build_ancestors(self):
+        """Build ancestor chains for all locations."""
+        for loc in self.locations:
+            # Build ancestor chain from this location up to root
+            ancestors = []
+            ancestors_names = []
+            ancestors_levels = []
+            
+            current = loc
+            while current is not None:
+                ancestors.append(current.id)
+                ancestors_names.append(current.name)
+                ancestors_levels.append(current.admin_level)
+                
+                # Move to parent
+                if current.parent_id is not None:
+                    current = self.locations_by_id[current.parent_id]
+                else:
+                    current = None
+            
+            loc.ancestors = ancestors
+            loc.ancestors_names = ancestors_names
+            loc.ancestors_levels = ancestors_levels
+    
+    def _build_indexes(self):
+        """Build lookup indexes."""
+        # Index by city name
+        for loc in self.locations:
+            if loc.name not in self.by_city:
+                self.by_city[loc.name] = []
+            self.by_city[loc.name].append(loc.id)
+        
+        # Index by (city, state)
+        # State is the first ancestor with admin_level <= 6 (district level)
+        for loc in self.locations:
+            state_name = self._find_state(loc)
+            if state_name:
+                key = (loc.name, state_name)
+                if key not in self.by_city_state:
+                    self.by_city_state[key] = []
+                self.by_city_state[key].append(loc.id)
+    
+    def _find_state(self, loc: Location) -> Optional[str]:
+        """
+        Find the state/district for a location.
+        
+        State is the first ancestor with admin_level in [4, 6]
+        - Level 4: Autonomous regions (Açores, Madeira)
+        - Level 6: Districts
+        
+        Args:
+            loc: Location to find state for
+            
+        Returns:
+            State name or None
+        """
+        for i, ancestor_id in enumerate(loc.ancestors):
+            ancestor = self.locations_by_id[ancestor_id]
+            if ancestor.admin_level in [4, 6]:
+                return ancestor.name
+        return None
+    
+    def get_stats(self) -> dict:
+        """Get statistics about the loaded data."""
+        return {
+            "total_locations": len(self.locations),
+            "unique_cities": len(self.by_city),
+            "unique_city_state_pairs": len(self.by_city_state),
+            "levels": {level: sum(1 for loc in self.locations if loc.admin_level == level) 
+                      for level in set(loc.admin_level for loc in self.locations)}
+        }
