@@ -122,23 +122,32 @@ class GeoDataLoader:
                 self.by_city[loc.name] = []
             self.by_city[loc.name].append(loc.id)
         
-        # Index by (city, state)
-        # State is the first ancestor with admin_level <= 6 (district level)
+        # Index by (city, ancestor) for ALL ancestors
+        # This allows state to be any level (district, concelho, etc)
         for loc in self.locations:
-            state_name = self._find_state(loc)
-            if state_name:
-                key = (loc.name, state_name)
+            # Create index entries for ALL ancestors
+            for ancestor_id in loc.ancestors:
+                if ancestor_id == loc.id:
+                    continue  # Skip self
+                
+                ancestor = self.locations_by_id[ancestor_id]
+                key = (loc.name, ancestor.name)
                 if key not in self.by_city_state:
                     self.by_city_state[key] = []
-                self.by_city_state[key].append(loc.id)
+                if loc.id not in self.by_city_state[key]:
+                    self.by_city_state[key].append(loc.id)
     
     def _find_state(self, loc: Location) -> Optional[str]:
         """
-        Find the state/district for a location.
+        Find the primary state/district for a location.
         
-        State is the first ancestor with admin_level in [4, 6]
+        Returns the first ancestor with admin_level in [4, 6, 7]:
         - Level 4: Autonomous regions (Açores, Madeira)
         - Level 6: Districts
+        - Level 7: Concelhos (if no district found)
+        
+        Note: This is used for backwards compatibility. The main lookup
+        system now supports ANY ancestor as state via by_city_state index.
         
         Args:
             loc: Location to find state for
@@ -146,10 +155,18 @@ class GeoDataLoader:
         Returns:
             State name or None
         """
-        for i, ancestor_id in enumerate(loc.ancestors):
+        # First try to find district or autonomous region (levels 4, 6)
+        for ancestor_id in loc.ancestors:
             ancestor = self.locations_by_id[ancestor_id]
             if ancestor.admin_level in [4, 6]:
                 return ancestor.name
+        
+        # Fallback: try concelho (level 7)
+        for ancestor_id in loc.ancestors:
+            ancestor = self.locations_by_id[ancestor_id]
+            if ancestor.admin_level == 7:
+                return ancestor.name
+        
         return None
     
     def get_stats(self) -> dict:
